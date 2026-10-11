@@ -1,3 +1,3 @@
 window.APP_CONFIG = {
-  GIST_TOKEN: "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"
+  GIST_TOKEN: "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"
 };
