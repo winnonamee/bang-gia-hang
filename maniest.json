@@ -1,0 +1,25 @@
+{
+  "name": "Sổ Giá Gia Đình",
+  "short_name": "Sổ Giá",
+  "description": "Bảng giá bán hàng gia đình, đồng bộ nhiều máy",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f6f4ee",
+  "theme_color": "#0f7a44",
+  "icons": [
+    {
+      "src": "data:[omitted-by-pwabuilder]",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "data:[omitted-by-pwabuilder]",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
