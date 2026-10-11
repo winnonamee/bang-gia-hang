@@ -13,7 +13,6 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
-<script src="config.js"></script>
 <style>
 :root{
   --paper:#f6f4ee; --card:#ffffff; --ink:#1b2721; --muted:#6d7c71; --line:#e6e1d2;
@@ -349,12 +348,11 @@ main{max-width:640px;margin:0 auto;padding:16px 16px calc(40px + env(safe-area-i
 <script>
 'use strict';
 
-/* ===== 1) CẤU HÌNH ===== */
-const GIST_ID    = "b6e9a041986eb3f8baa840b0bf9e3f36";
-const FILE_NAME  = "price-data.json";
-const GIST_TOKEN = window.APP_CONFIG?.GIST_TOKEN || "";
-const LOCAL_KEY  = 'sogia_family_data_v1';
-const SYNC_INTERVAL = 25000;
+/* ===== 1) CẤU HÌNH JSONBIN (đã điền sẵn của bạn) ===== */
+const JSONBIN_API_KEY = "$2a$10$OkML0UgCzpoxEfc/eG3sROqhmqjJmBaCpwMf3JJYKssNT2UPhULhu";
+const JSONBIN_BIN_ID  = "6acb61c4ac6210605a277849";
+const LOCAL_KEY       = 'sogia_family_data_v1';
+const SYNC_INTERVAL   = 25000;
 
 /* ===== 2) TRẠNG THÁI ===== */
 const state = {
@@ -427,26 +425,25 @@ function setSync(key, msg){
     ? new Date(state.lastSyncedAt).toLocaleTimeString('vi-VN',{hour:'2-digit',minute:'2-digit'}) : '';
 }
 
-/* ===== 7) ĐỒNG BỘ GITHUB GIST (DUY NHẤT 1 BỘ) ===== */
+/* ===== 7) ĐỒNG BỘ QUA JSONBIN (KHÔNG BỊ KHÓA) ===== */
 async function pullFromServer(manual){
   if(state.syncing) return;
   state.syncing = true;
   setSync('loading','Đang tải dữ liệu…');
   try {
-    const res = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+    const res = await fetch(`https://api.jsonbin.io/v3/b/${JSONBIN_BIN_ID}/latest`, {
       method:'GET', cache:'no-store',
-      headers:{ 'Authorization': `token ${GIST_TOKEN}`, 'Accept':'application/json' }
+      headers:{ 'X-Api-Key': JSONBIN_API_KEY }
     });
-    if(res.status===404) throw new Error('Gist không tồn tại — kiểm tra GIST_ID');
-    if(res.status===401) throw new Error('Token sai — tạo lại token trên GitHub');
+    if(res.status===404) throw new Error('Bin không tồn tại — kiểm tra BIN_ID');
+    if(res.status===401) throw new Error('API Key sai — kiểm tra lại');
     if(!res.ok) throw new Error('Lỗi kết nối '+res.status);
     const data = await res.json();
-    if(!data.files[FILE_NAME]) throw new Error('Chưa có file '+FILE_NAME+' trong Gist');
-    const content = JSON.parse(data.files[FILE_NAME].content);
+    const rec = (data && data.record) ? data.record : { products: [], updatedAt: 0 };
     state.lastSyncedAt = Date.now();
-    if(content.updatedAt > state.updatedAt){
-      state.products = content.products||[];
-      state.updatedAt = content.updatedAt;
+    if((rec.updatedAt||0) > state.updatedAt){
+      state.products = rec.products||[];
+      state.updatedAt = rec.updatedAt||0;
       saveLocal(); renderAll();
       setSync('ok','Đã cập nhật dữ liệu mới');
       if(manual) toast('Đã tải dữ liệu mới nhất','ok');
@@ -466,19 +463,16 @@ async function pushToServer(quiet){
   state.syncing = true;
   if(!quiet) setSync('loading','Đang lưu lên máy chủ…');
   try {
-    const res = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
-      method:'PATCH',
+    const res = await fetch(`https://api.jsonbin.io/v3/b/${JSONBIN_BIN_ID}`, {
+      method:'PUT',
       headers:{
-        'Authorization': `token ${GIST_TOKEN}`,
-        'Content-Type':'application/json',
-        'Accept':'application/json'
+        'X-Api-Key': JSONBIN_API_KEY,
+        'Content-Type':'application/json'
       },
-      body: JSON.stringify({
-        files:{ [FILE_NAME]:{ content: JSON.stringify({products:state.products, updatedAt:state.updatedAt}, null, 2) } }
-      })
+      body: JSON.stringify({ products: state.products, updatedAt: state.updatedAt })
     });
-    if(res.status===404) throw new Error('Gist không tồn tại');
-    if(res.status===401) throw new Error('Token không có quyền — tạo lại token');
+    if(res.status===404) throw new Error('Bin không tồn tại');
+    if(res.status===401) throw new Error('API Key sai — không có quyền ghi');
     if(!res.ok) throw new Error('Lỗi lưu '+res.status);
     state.pendingSync = false;
     state.lastSyncedAt = Date.now();
