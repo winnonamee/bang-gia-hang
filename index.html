@@ -448,12 +448,127 @@ main{max-width:640px;margin:0 auto;padding:16px 16px calc(40px + env(safe-area-i
 /* ============================================================
    1) CẤU HÌNH KẾT NỐI DỮ LIỆU (đã có sẵn — dùng đúng, không đổi)
    ============================================================ */
-const GIST_ID = "b6e9a041986eb3f8baa840b0bf9e3f36";
-const GIST_TOKEN = "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";
+// ===== DỮ LIỆU =====
+const REPO_RAW_URL = "https://raw.githubusercontent.com/winnonamee/bang-gia-hang/main/data.json";
+const REPO_API_URL = "https://api.github.com/repos/winnonamee/bang-gia-hang/contents/data.json";
+const LOCAL_KEY = 'sogia_family_data_v1';
+const SYNC_INTERVAL = 25000;
 
-const LOCAL_KEY      = 'sogia_family_data_v1'; // khóa lưu dự phòng trên máy
-const SYNC_INTERVAL  = 25000;                  // tự động tải lại mỗi 25 giây (trong khoảng 20–30s)
+// ===== LƯU DỰ PHÒNG TRÊN MÁY =====
+function saveLocal(){
+  try{
+    localStorage.setItem(LOCAL_KEY, JSON.stringify({ 
+      products: state.products, 
+      updatedAt: state.updatedAt 
+    }));
+  }catch(e){}
+}
+function loadLocal(){
+  try{
+    const raw = localStorage.getItem(LOCAL_KEY);
+    if(!raw) return false;
+    const data = JSON.parse(raw);
+    if(!data || !Array.isArray(data.products)) return false;
+    state.products = data.products;
+    state.updatedAt = data.updatedAt || 0;
+    return true;
+  }catch(e){ return false; }
+}
 
+// ===== TẢI DỮ LIỆU =====
+async function pullFromServer(manual){
+  if(state.syncing) return;
+  state.syncing = true;
+  setSync('loading','Đang tải…');
+  
+  try {
+    const res = await fetch(REPO_RAW_URL, { cache: 'no-store' });
+    if(!res.ok) throw new Error('Chưa có file data.json');
+    
+    const content = await res.json();
+    
+    state.lastSyncedAt = Date.now();
+    if(content.updatedAt > state.updatedAt) {
+      state.products = content.products || [];
+      state.updatedAt = content.updatedAt;
+      saveLocal();
+      renderAll();
+    }
+    
+    setSync('ok','✅ Đã đồng bộ');
+    if(manual) toast('Đồng bộ thành công!','ok');
+    
+  } catch(err) {
+    console.error('Lỗi tải:', err);
+    setSync('offline','Dùng dữ liệu trên máy');
+    if(manual) toast('⚠️ ' + err.message, 'warn', 5000);
+  } finally {
+    state.syncing = false;
+  }
+}
+
+// ===== LƯU DỮ LIỆU =====
+async function pushToServer(quiet){
+  if(state.syncing) { state.pendingSync = true; return; }
+  state.syncing = true;
+  if(!quiet) setSync('loading','Đang lưu…');
+  
+  try {
+    // Lấy SHA file
+    const getRes = await fetch(REPO_API_URL);
+    if(!getRes.ok) throw new Error('Không tìm thấy file');
+    const fileData = await getRes.json();
+    
+    // Chuẩn bị dữ liệu
+    const newData = {
+      products: state.products,
+      updatedAt: state.updatedAt
+    };
+    
+    // Gửi lên
+    const res = await fetch(REPO_API_URL, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        message: 'Cập nhật dữ liệu',
+        content: btoa(unescape(encodeURIComponent(JSON.stringify(newData, null, 2)))),
+        sha: fileData.sha,
+        branch: 'main'
+      })
+    });
+    
+    if(!res.ok) throw new Error('Không có quyền lưu — dùng dữ liệu trên máy');
+    
+    state.pendingSync = false;
+    state.lastSyncedAt = Date.now();
+    setSync('ok','✅ Đã lưu trên máy chủ');
+    if(!quiet) toast('✅ Đã lưu trên máy chủ','ok');
+    
+  } catch(err) {
+    console.error('Lỗi lưu:', err);
+    state.pendingSync = true;
+    setSync('local','Đã lưu tạm — sẽ đồng bộ sau');
+    if(!quiet) toast('⚠️ Lưu tạm trên máy','warn', 5000);
+  } finally {
+    state.syncing = false;
+  }
+}
+
+// ===== Khởi động =====
+function commitChange(){
+  state.updatedAt = Date.now();
+  state.pendingSync = true;
+  saveLocal();
+  renderAll();
+  pushToServer(false);
+}
+
+function syncTick(){
+  if(state.pendingSync) pushToServer(true);
+  else pullFromServer(false);
+}
 /* ============================================================
    2) TRẠNG THÁI TOÀN CỤC
    ============================================================ */
