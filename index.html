@@ -570,81 +570,81 @@ function setSync(key, msg){
 }
 
 /* ============================================================
-   7) ĐỒNG BỘ MÁY CHỦ JSONBIN
+   7) ĐỒNG BỘ MÁY CHỦ GITHUB GIST
    GET : header 'X-Master-Key'
    PUT : header 'Content-Type' + 'X-Master-Key'
+   ============================================================ */
+/* ============================================================
+   7) ĐỒNG BỘ DỮ LIỆU QUA GITHUB GIST
    ============================================================ */
 async function pullFromServer(manual){
   if(state.syncing) return;
   state.syncing = true;
-  setSync('loading','Đang tải dữ liệu từ máy chủ…');
-  try{
-    const res = await fetch(API_URL, {
-      method:'GET', cache:'no-store',
-      headers:{ 'X-Master-Key': SECURITY_KEY }
+  setSync('loading','Đang tải dữ liệu…');
+  try {
+    const res = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+      method: 'GET', cache: 'no-store',
+      headers: { 'Authorization': `token ${GIST_TOKEN}` }
     });
-    if(!res.ok) throw new Error('HTTP ' + res.status);
-    const json = await res.json();
-    const rec  = (json && json.record && Array.isArray(json.record.products))
-      ? json.record : { products: [], updatedAt: 0 };
-
+    if(!res.ok) throw new Error('Lỗi kết nối');
+    const data = await res.json();
+    const content = JSON.parse(data.files['price-data.json'].content);
+    
     state.lastSyncedAt = Date.now();
-
-    if(rec.updatedAt > state.updatedAt){
-      // Máy chủ MỚI HƠN → nhận dữ liệu về (đồng bộ từ máy khác)
-      state.products  = rec.products;
-      state.updatedAt = rec.updatedAt;
+    if(content.updatedAt > state.updatedAt) {
+      state.products = content.products || [];
+      state.updatedAt = content.updatedAt;
       saveLocal();
       renderAll();
-      setSync('ok','Đã cập nhật dữ liệu mới từ máy chủ');
-      if(manual) toast('Đã tải dữ liệu mới nhất','ok');
-    }else if(state.updatedAt > rec.updatedAt){
-      // Máy NÀY mới hơn (VD: đợt trước sửa offline chưa kịp đẩy) → đánh dấu chờ đẩy lên
-      state.pendingSync = true;
-      setSync('local','Có thay đổi trên máy chưa lên máy chủ — sẽ tự đồng bộ');
-      syncSoon();
-    }else{
-      setSync('ok', state.pendingSync ? 'Đang chờ đẩy thay đổi lên máy chủ…' : 'Đã đồng bộ với máy chủ');
-      if(manual) toast('Dữ liệu đã là mới nhất','info');
+      setSync('ok','Đã cập nhật từ máy chủ');
+      if(manual) toast('✅ Dữ liệu đã đồng bộ','ok');
+    } else {
+      setSync('ok','Đã đồng bộ');
+      if(manual) toast('Đã là phiên bản mới nhất','info');
     }
-  }catch(err){
-    // Lỗi mạng → dùng bản trong máy
-    setSync('offline','Mất kết nối máy chủ — đang dùng dữ liệu trên máy');
-    if(manual) toast('Không kết nối được máy chủ. Kiểm tra lại mạng.','err');
-  }finally{
+  } catch(err) {
+    setSync('offline','Dùng dữ liệu trên máy');
+    if(manual) toast('⚠️ Không kết nối được máy chủ','warn');
+  } finally {
     state.syncing = false;
   }
 }
 
-/* quiet=true: chỉ cập nhật dòng trạng thái, không hiện toast (dùng cho lần thử lại tự động) */
 async function pushToServer(quiet){
-  if(state.syncing){ state.pendingSync = true; return; } // đang bận → hẹn vòng sau, KHÔNG bỏ sót thay đổi
+  if(state.syncing) { state.pendingSync = true; return; }
   state.syncing = true;
-  setSync('loading','Đang lưu lên máy chủ…');
-  try{
-    const res = await fetch(API_URL, {
-      method:'PUT',
-      headers:{
-        'Content-Type':'application/json',
-        'X-Master-Key': SECURITY_KEY
+  if(!quiet) setSync('loading','Đang lưu lên máy chủ…');
+  try {
+    const res = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+      method: 'PATCH',
+      headers: {
+        'Authorization': `token ${GIST_TOKEN}`,
+        'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ products: state.products, updatedAt: state.updatedAt })
+      body: JSON.stringify({
+        files: {
+          'price-data.json': {
+            content: JSON.stringify({
+              products: state.products,
+              updatedAt: state.updatedAt
+            }, null, 2)
+          }
+        }
+      })
     });
-    if(!res.ok) throw new Error('HTTP ' + res.status);
-    state.pendingSync  = false;
+    if(!res.ok) throw new Error('Lỗi lưu');
+    state.pendingSync = false;
     state.lastSyncedAt = Date.now();
-    setSync('ok','Đã lưu vĩnh viễn trên máy chủ');
-    if(!quiet) toast('Đã lưu vĩnh viễn trên máy chủ','ok');
-  }catch(err){
-    // Không lên được → đánh dấu chờ, vòng đồng bộ sau sẽ thử lại
+    setSync('ok','✅ Đã lưu vĩnh viễn');
+    if(!quiet) toast('✅ Đã lưu trên máy chủ','ok');
+  } catch(err) {
     state.pendingSync = true;
-    setSync('local','Đã lưu tạm trên máy — sẽ tự đồng bộ khi có mạng');
-    if(!quiet) toast('Đã lưu tạm trên máy (chưa lên được máy chủ)','warn');
-  }finally{
+    setSync('local','Đã lưu tạm — sẽ đồng bộ sau');
+    if(!quiet) toast('⚠️ Đã lưu tạm trên máy','warn');
+  } finally {
     state.syncing = false;
   }
 }
-
 /* Hẹn 1 nhịp ngắn rồi đẩy lên (tránh chồng lấp khi vừa GET xong) */
 function syncSoon(){ setTimeout(() => { if(state.pendingSync) pushToServer(true); }, 1200); }
 
