@@ -462,6 +462,40 @@ const $$ = s => Array.from(document.querySelectorAll(s));
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const normName = s => String(s||'').replace(/\s+/g,' ').trim();
 const keyName  = s => normName(s).toLowerCase();
+/* ===== Chuẩn hóa tên thông minh: "thuốc lá ngựa đen" == "thuốc ngựa đen" == "Ngựa Đen" ===== */
+function stripDiacritics(s){ return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').replace(/Đ/g,'D'); }
+// Từ thường bị LƯỢC BỎ khi gọi tên (đơn vị / tiền tố thuốc lá) — bỏ đi khi so khớp
+const NAME_STOP_WORDS = ['thuoc la','thuoc','chai','lon','goi','hop','cai','tui','khay','thung','loc','loai','quy','sachet','siro','vien','vi'];
+// Khóa tên chuẩn: bỏ dấu, bỏ ký tự đặc biệt, bỏ từ thừa → "ngua den"
+function nameKey(s){
+  let t = stripDiacritics(normName(s)).toLowerCase();
+  t = t.replace(/[^a-z0-9\s]/g,' ').replace(/\s+/g,' ').trim();
+  const backup = t; // nếu xóa từ thừa xong thành rỗng → dùng lại bản chưa xóa
+  for(const w of NAME_STOP_WORDS){ t = t.replace(new RegExp('\\b'+w+'\\b','g'),' '); }
+  t = t.replace(/\s+/g,' ').trim();
+  return t || backup;
+}
+// Độ tương đồng 0..1 giữa 2 tên (1 = giống hệt)
+function nameSimilarity(a,b){
+  const ka=nameKey(a), kb=nameKey(b);
+  if(!ka || !kb) return 0;
+  if(ka===kb) return 1;
+  if(ka.includes(kb)||kb.includes(ka)) return 0.92;
+  const wa=ka.split(' '), wb=kb.split(' ');
+  let hit=0; for(const w of wa) if(wb.includes(w)) hit++;
+  const denom = Math.max(wa.length, wb.length);
+  return denom ? hit/denom : 0;
+}
+// Tìm mặt hàng giống nhất trong kho (ngưỡng 0.6), loại trừ id nếu cần
+function findSimilarProduct(name, excludeId){
+  let best=null, bestSim=0;
+  for(const p of state.products){
+    if(excludeId && p.id===excludeId) continue;
+    const sim = nameSimilarity(p.name, name);
+    if(sim>bestSim){ bestSim=sim; best=p; }
+  }
+  return bestSim>=0.6 ? {product:best, sim:bestSim} : null;
+}
 function fmtDong(n){ if(!isFinite(n)) return '—'; return Math.round(n*1000).toLocaleString('vi-VN')+' đồng'; }
 function parseNghin(str){
   if(str==null) return NaN;
@@ -663,7 +697,17 @@ function bindMic(btnId, inputId, isSearch){
 
 /* ===== 10) RENDER — CẬP NHẬT THÊM MỤC LỤC, ĐƠN VỊ, VỐN THÙNG ===== */
 const byNameAZ = (a,b) => a.name.localeCompare(b.name,'vi',{sensitivity:'base'});
-const matchQ = (p,q) => !q || p.name.toLowerCase().includes(q) || (p.cat||'').toLowerCase().includes(q);
+// So khớp tìm kiếm thông minh: bỏ dấu, bỏ từ thừa → "thuốc ngựa đen" ra ngay "thuốc lá ngựa đen"
+function matchQ(p,q){
+  if(!q) return true;
+  const kp = nameKey(p.name)+' '+nameKey(p.cat||'');
+  const kq = nameKey(q);
+  if(!kq) return true;
+  if(kp.includes(kq)) return true;
+  // Mọi từ gõ vào đều xuất hiện trong tên/danh mục?
+  const words = kq.split(' ');
+  return words.every(w => kp.includes(w));
+}
 
 function renderViewList(){
   const q = $('#searchView').value.trim().toLowerCase();
@@ -801,6 +845,21 @@ async function onSave(){
       commitChange(); toast('Đã cập nhật giá "'+dup.name+'"','ok');
       fName().value=''; fCost().value=''; fSale().value=''; fCat().value=''; fUnit().value=''; fBox().value=''; updateHints();
     } else {
+      // Phát hiện trùng dù tên gọi khác nhau: "thuốc ngựa đen" vs "thuốc lá ngựa đen"
+      const sim = findSimilarProduct(name);
+      if(sim){
+        const ok = await askConfirm({
+          title:'Có thể trùng mặt hàng?',
+          message:`Bạn sắp thêm <b>"${esc(name)}"</b>.<br>Trong kho đã có <b>"${esc(sim.product.name)}"</b> (giống ~${Math.round(sim.sim*100)}%).<br>Cập nhật giá cho hàng có sẵn hay thêm mặt hàng mới?`,
+          okText:'Cập nhật hàng có sẵn', cancelText:'Thêm mới'
+        });
+        if(ok){
+          sim.product.cost=cost; sim.product.price=sale; sim.product.cat=cat; sim.product.unit=unit; sim.product.boxCost=isFinite(boxCost)?boxCost:null;
+          commitChange(); toast('Đã cập nhật giá "'+sim.product.name+'"','ok');
+          fName().value=''; fCost().value=''; fSale().value=''; fCat().value=''; fUnit().value=''; fBox().value=''; updateHints();
+          return;
+        }
+      }
       state.products.push({
         id: Date.now().toString(36)+Math.random().toString(36).slice(2,7),
         name, cost, price: sale, cat, unit, boxCost: isFinite(boxCost)?boxCost:null
@@ -869,13 +928,15 @@ function setupPWA(){
   }catch(e){}
 }
 
-/* ===== 13B) CAMERA SCAN: KHO ẢNH CỤC BỘ + AI (OpenRouter chính → Gemini dự phòng) ===== */
+/* ===== 13B) CAMERA SCAN: KHO ẢNH CỤC BỘ + AI (OpenRouter chính → AshnaAI/DeepSeek dự phòng, KHÔNG dùng Gemini) ===== */
 const OPENROUTER_KEY = "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";
 const OPENROUTER_MODELS = ["nvidia/nemotron-3.5-super-vl:free","google/gemini-3.5-flash-lite","qwen/qwen3-vl-8b-instruct","openai/gpt-4o-mini"];
-const GEMINI_AI_KEY = "AIzaSyCEZ1xSab_5HMOrlx_94qmKKUDsvLcyaw4";
-const GEMINI_AI_MODELS = ["gemini-flash-latest","gemini-3.8-flash","gemini-3.7-flash","gemini-3.6-flash","gemini-3.5-flash"];
+const ASHNA_KEY = "sk-ashna-0BRWeau18BWG2UjDz0376";
+const ASHNA_BASE = "https://api.ashna.ai/v1/api";
+const ASHNA_MODELS = ["gpt-4o-mini","gemini-2.0-flash","qwen-vl-max","claude-3-haiku-20240307"];
 const AI_TIMEOUT_MS = 10000;
-const GOOD_MODEL_KEY = "sogia_good_model_v1";
+const GOOD_OR_MODEL_KEY = "sogia_good_or_model_v1";
+const GOOD_ASHNA_MODEL_KEY = "sogia_good_ashna_model_v1";
 const LIB_KEY = "sogia_image_lib_v1";
 const HASH_MATCH_DIST = 12;
 
@@ -994,7 +1055,7 @@ function renderLib(){
 
 async function callOpenRouter(b64, prompt){
   let models = OPENROUTER_MODELS.slice();
-  try{ const last=localStorage.getItem(GOOD_MODEL_KEY); if(last && models.includes(last)) models=[last, ...models.filter(m=>m!==last)]; }catch(e){}
+  try{ const last=localStorage.getItem(GOOD_OR_MODEL_KEY); if(last && models.includes(last)) models=[last, ...models.filter(m=>m!==last)]; }catch(e){}
   let lastErr=null;
   for(const model of models){
     try{
@@ -1009,36 +1070,38 @@ async function callOpenRouter(b64, prompt){
       if(!res.ok){ lastErr=new Error('OpenRouter lỗi '+res.status); continue; }
       const data=await res.json();
       const text=data?.choices?.[0]?.message?.content||'';
-      if(text){ try{ localStorage.setItem(GOOD_MODEL_KEY, model); }catch(e){} return text; }
+      if(text){ try{ localStorage.setItem(GOOD_OR_MODEL_KEY, model); }catch(e){} return text; }
     }catch(e){ lastErr=e; }
   }
   throw lastErr || new Error('OpenRouter không phản hồi');
 }
-async function callGeminiAI(b64, prompt){
+async function callAshnaAI(b64, prompt){
+  let models = ASHNA_MODELS.slice();
+  try{ const last=localStorage.getItem(GOOD_ASHNA_MODEL_KEY); if(last && models.includes(last)) models=[last, ...models.filter(m=>m!==last)]; }catch(e){}
   let lastErr=null;
-  for(const model of GEMINI_AI_MODELS){
+  for(const model of models){
     try{
       const ctrl=new AbortController(); const t=setTimeout(()=>ctrl.abort(), AI_TIMEOUT_MS);
-      const res=await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+model+':generateContent?key='+GEMINI_AI_KEY,{
+      const res=await fetch(ASHNA_BASE+'/chat/completions',{
         method:'POST', signal:ctrl.signal,
-        headers:{ 'Content-Type':'application/json' },
-        body: JSON.stringify({ contents:[{ parts:[ {text:prompt}, {inlineData:{mimeType:'image/jpeg', data:b64}} ]}], generationConfig:{ responseMimeType:'application/json', maxOutputTokens:220 } })
+        headers:{ 'Authorization':'Bearer '+ASHNA_KEY, 'Content-Type':'application/json' },
+        body: JSON.stringify({ model, messages:[{ role:'user', content:[{type:'text',text:prompt},{type:'image_url',image_url:{url:'data:image/jpeg;base64,'+b64}}] }], max_tokens:220, response_format:{type:'json_object'} })
       });
       clearTimeout(t);
-      if(res.status===429){ lastErr=new Error('Hết lượt Gemini'); await new Promise(r=>setTimeout(r,2500)); continue; }
-      if(!res.ok){ lastErr=new Error('Gemini lỗi '+res.status); continue; }
+      if(res.status===429 || res.status===402){ lastErr=new Error('Hết lượt AshnaAI tạm thời'); await new Promise(r=>setTimeout(r,2500)); continue; }
+      if(!res.ok){ lastErr=new Error('AshnaAI lỗi '+res.status); continue; }
       const data=await res.json();
-      const text=(data?.candidates?.[0]?.content?.parts||[]).map(p=>p.text||'').join('');
-      if(text) return text;
+      const text=data?.choices?.[0]?.message?.content||'';
+      if(text){ try{ localStorage.setItem(GOOD_ASHNA_MODEL_KEY, model); }catch(e){} return text; }
     }catch(e){ lastErr=e; }
   }
-  throw lastErr || new Error('Gemini không phản hồi');
+  throw lastErr || new Error('AshnaAI không phản hồi');
 }
 async function callAI(b64, prompt){
   try{ return await callOpenRouter(b64, prompt); }
   catch(e){
-    console.log('OpenRouter lỗi, chuyển Gemini:', e.message);
-    return await callGeminiAI(b64, prompt);
+    console.log('OpenRouter lỗi, chuyển AshnaAI/DeepSeek:', e.message);
+    return await callAshnaAI(b64, prompt);
   }
 }
 function parseAIJson(text){
