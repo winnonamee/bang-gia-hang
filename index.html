@@ -967,7 +967,7 @@ const HASH_MATCH_DIST = 12;
 /* ===== Khóa AI tùy chỉnh (lưu trong máy) — ưu tiên hơn khóa nhúng trong code ===== */
 const CUSTOM_OR_KEY = "sogia_custom_or_key_v1";
 const CUSTOM_GEM_KEY = "sogia_custom_gem_key_v1";
-const GEMINI_MODELS = ["gemini-2.0-flash","gemini-1.5-flash"];
+const GEMINI_MODELS = ["gemini-3.5-flash-lite","gemini-3.8-flash","gemini-3.5-flash"];
 const GOOD_GEM_MODEL_KEY = "sogia_good_gem_model_v1";
 function getOpenRouterKey(){ try{ return localStorage.getItem(CUSTOM_OR_KEY)||OPENROUTER_KEY; }catch(e){ return OPENROUTER_KEY; } }
 function getGeminiKey(){ try{ return localStorage.getItem(CUSTOM_GEM_KEY)||""; }catch(e){ return ""; } }
@@ -1144,7 +1144,7 @@ async function callGemini(b64, prompt){
         body: JSON.stringify({ contents:[{ parts:[{ text:prompt },{ inline_data:{ mime_type:'image/jpeg', data:b64 } }] }], generationConfig:{ maxOutputTokens:220, responseMimeType:'application/json' } })
       });
       clearTimeout(t);
-      if(res.status===429){ lastErr=new Error('Hết lượt Gemini tạm thời'); await new Promise(r=>setTimeout(r,2500)); continue; }
+      if(res.status===429 || res.status===503){ lastErr=new Error('Gemini tạm thời quá tải'); await new Promise(r=>setTimeout(r,2500)); continue; }
       if(res.status===403 || res.status===400){ lastErr=new Error('Khóa Gemini lỗi (403/400) — cần khóa mới'); continue; }
       if(!res.ok){ lastErr=new Error('Gemini lỗi '+res.status); continue; }
       const data=await res.json();
