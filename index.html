@@ -414,6 +414,31 @@ main{max-width:640px;margin:0 auto;padding:16px 16px calc(40px + env(safe-area-i
       </div>
     </div>
 
+    <div class="lib-card" id="aiKeyCard" style="margin-top:18px">
+      <div class="lib-head">
+        <span class="lib-title"><span class="lt-ic" id="aiKeyIc" style="background:var(--amber-soft);color:var(--amber)"></span>Cài đặt khóa AI quét ảnh</span>
+        <div class="lib-btns">
+          <button class="btn-sm btn-lib" id="btnAiKeyToggle" type="button" aria-label="Mở rộng"></button>
+        </div>
+      </div>
+      <div class="lib-body hidden" id="aiKeyBody">
+        <p style="font-size:11.5px;color:var(--muted);line-height:1.55;margin-bottom:10px">Nếu quét ảnh không chạy → khóa AI trong code đã hết. Dán khóa mới vào ô dưới (lưu trên máy này, không gửi đi đâu). <b>Khóa Gemini miễn phí</b> lấy tại <b>aistudio.google.com</b> → Get API key (không cần thẻ tín dụng, ~1500 lượt/ngày).</p>
+        <label class="field" style="margin-bottom:10px">
+          <span class="flabel">Khóa OpenRouter (tùy chọn)</span>
+          <div class="control no-lead"><input id="aiKeyOR" type="text" placeholder="sk-or-v1-…" autocomplete="off" style="padding-right:14px;font-size:13px"></div>
+        </label>
+        <label class="field" style="margin-bottom:10px">
+          <span class="flabel">Khóa Google Gemini (khuyến nghị — miễn phí)</span>
+          <div class="control no-lead"><input id="aiKeyGem" type="text" placeholder="AIza…" autocomplete="off" style="padding-right:14px;font-size:13px"></div>
+        </label>
+        <div class="btn-row" style="margin-top:2px">
+          <button class="btn-ghost" id="btnAiKeyClear" type="button" style="padding:12px 16px;font-size:12.5px">Xóa khóa</button>
+          <button class="btn-main" id="btnAiKeySave" type="button" style="padding:12px;font-size:13.5px">Lưu khóa</button>
+        </div>
+        <p class="lib-hint" id="aiKeyStatus" style="margin-top:10px">Đang dùng khóa có sẵn trong code. Nếu quét lỗi → dán khóa mới vào rồi bấm Lưu.</p>
+      </div>
+    </div>
+
     <div class="control" style="margin-top:18px">
       <span class="lead" id="searchIcon2"></span>
       <input id="searchManage" type="search" placeholder="Lọc theo tên hoặc mục lục…" autocomplete="off" enterkeyhint="search" style="padding-right:92px">
@@ -939,6 +964,13 @@ const GOOD_OR_MODEL_KEY = "sogia_good_or_model_v1";
 const GOOD_ASHNA_MODEL_KEY = "sogia_good_ashna_model_v1";
 const LIB_KEY = "sogia_image_lib_v1";
 const HASH_MATCH_DIST = 12;
+/* ===== Khóa AI tùy chỉnh (lưu trong máy) — ưu tiên hơn khóa nhúng trong code ===== */
+const CUSTOM_OR_KEY = "sogia_custom_or_key_v1";
+const CUSTOM_GEM_KEY = "sogia_custom_gem_key_v1";
+const GEMINI_MODELS = ["gemini-2.0-flash","gemini-1.5-flash"];
+const GOOD_GEM_MODEL_KEY = "sogia_good_gem_model_v1";
+function getOpenRouterKey(){ try{ return localStorage.getItem(CUSTOM_OR_KEY)||OPENROUTER_KEY; }catch(e){ return OPENROUTER_KEY; } }
+function getGeminiKey(){ try{ return localStorage.getItem(CUSTOM_GEM_KEY)||""; }catch(e){ return ""; } }
 
 let lib = [];
 let scanMode = null;
@@ -1062,7 +1094,7 @@ async function callOpenRouter(b64, prompt){
       const ctrl=new AbortController(); const t=setTimeout(()=>ctrl.abort(), AI_TIMEOUT_MS);
       const res=await fetch('https://openrouter.ai/api/v1/chat/completions',{
         method:'POST', signal:ctrl.signal,
-        headers:{ 'Authorization':'Bearer '+OPENROUTER_KEY, 'Content-Type':'application/json', 'HTTP-Referer':location.href, 'X-Title':'Sổ Giá Gia Đình' },
+        headers:{ 'Authorization':'Bearer '+getOpenRouterKey(), 'Content-Type':'application/json', 'HTTP-Referer':location.href, 'X-Title':'Sổ Giá Gia Đình' },
         body: JSON.stringify({ model, messages:[{ role:'user', content:[{type:'text',text:prompt},{type:'image_url',image_url:{url:'data:image/jpeg;base64,'+b64}}] }], max_tokens:220, response_format:{type:'json_object'} })
       });
       clearTimeout(t);
@@ -1097,12 +1129,50 @@ async function callAshnaAI(b64, prompt){
   }
   throw lastErr || new Error('AshnaAI không phản hồi');
 }
-async function callAI(b64, prompt){
-  try{ return await callOpenRouter(b64, prompt); }
-  catch(e){
-    console.log('OpenRouter lỗi, chuyển AshnaAI/DeepSeek:', e.message);
-    return await callAshnaAI(b64, prompt);
+async function callGemini(b64, prompt){
+  const gemKey = getGeminiKey();
+  if(!gemKey) throw new Error('Chưa có khóa Gemini');
+  let models = GEMINI_MODELS.slice();
+  try{ const last=localStorage.getItem(GOOD_GEM_MODEL_KEY); if(last && models.includes(last)) models=[last, ...models.filter(m=>m!==last)]; }catch(e){}
+  let lastErr=null;
+  for(const model of models){
+    try{
+      const ctrl=new AbortController(); const t=setTimeout(()=>ctrl.abort(), AI_TIMEOUT_MS);
+      const res=await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+model+':generateContent?key='+encodeURIComponent(gemKey),{
+        method:'POST', signal:ctrl.signal,
+        headers:{ 'Content-Type':'application/json' },
+        body: JSON.stringify({ contents:[{ parts:[{ text:prompt },{ inline_data:{ mime_type:'image/jpeg', data:b64 } }] }], generationConfig:{ maxOutputTokens:220, responseMimeType:'application/json' } })
+      });
+      clearTimeout(t);
+      if(res.status===429){ lastErr=new Error('Hết lượt Gemini tạm thời'); await new Promise(r=>setTimeout(r,2500)); continue; }
+      if(res.status===403 || res.status===400){ lastErr=new Error('Khóa Gemini lỗi (403/400) — cần khóa mới'); continue; }
+      if(!res.ok){ lastErr=new Error('Gemini lỗi '+res.status); continue; }
+      const data=await res.json();
+      const text=data?.candidates?.[0]?.content?.parts?.map(p=>p.text||'').join('')||'';
+      if(text){ try{ localStorage.setItem(GOOD_GEM_MODEL_KEY, model); }catch(e){} return text; }
+    }catch(e){ lastErr=e; }
   }
+  throw lastErr || new Error('Gemini không phản hồi');
+}
+async function callAI(b64, prompt){
+  const gemKey = getGeminiKey();
+  const orKey = getOpenRouterKey();
+  const hasCustomOR = orKey && orKey !== OPENROUTER_KEY;
+  // Ưu tiên: nếu có khóa Gemini tùy chỉnh (miễn phí, ổn định) → thử trước; nếu có khóa OpenRouter tùy chỉnh → thử trước; nếu không có khóa tùy chỉnh nào → thử OpenRouter nhúng (có thể chết) rồi Ashna
+  const order = [];
+  if(gemKey) order.push('gemini');
+  if(hasCustomOR) order.push('openrouter');
+  if(!gemKey && !hasCustomOR) order.push('openrouter');
+  order.push('ashna');
+  let lastErr=null;
+  for(const prov of order){
+    try{
+      if(prov==='gemini') return await callGemini(b64, prompt);
+      if(prov==='openrouter') return await callOpenRouter(b64, prompt);
+      if(prov==='ashna') return await callAshnaAI(b64, prompt);
+    }catch(e){ lastErr=e; console.log(prov+' lỗi, chuyển nhà cung cấp tiếp:', e.message); }
+  }
+  throw lastErr || new Error('Tất cả nhà cung cấp AI đều lỗi');
 }
 function parseAIJson(text){
   if(!text) return null;
@@ -1183,7 +1253,8 @@ async function onScanFile(e){
     await runAIScan(b64);
   }catch(err){
     console.error(err);
-    toast('❌ '+(err&&err.message?err.message:'Lỗi không xác định'),'err',5000);
+    const msg = err&&err.message ? err.message : 'Lỗi không xác định';
+    toast('❌ Lỗi AI: '+msg+' — Vào tab Quản Lý → "Cài đặt khóa AI" để dán khóa mới (miễn phí tại aistudio.google.com)','err',7000);
   }
 }
 
@@ -1274,7 +1345,43 @@ function buildStatic(){
   $('#btnImport').innerHTML=icon('upload')+'Nhập';
   $('#btnLibToggle').innerHTML=icon('chevron');
   $('#libHint').innerHTML=icon('info')+' Chụp + đặt tên hàng → lần sau quét nhận ra ngay (không cần AI, không tốn lượt). <b>Trước khi thay code mới, bấm Xuất để sao lưu; sau đó Nhập lại là không mất dữ liệu.</b>';
+  $('#aiKeyIc').innerHTML=icon('zap');
+  $('#btnAiKeyToggle').innerHTML=icon('chevron');
   refreshFormMode();
+}
+function refreshAIKeyStatus(){
+  const orKey=getOpenRouterKey(), gemKey=getGeminiKey();
+  const parts=[];
+  if(gemKey) parts.push('✅ Đang dùng khóa Gemini bạn tự dán');
+  else if(orKey && orKey!==OPENROUTER_KEY) parts.push('✅ Đang dùng khóa OpenRouter bạn tự dán');
+  else parts.push('⚠️ Đang dùng khóa có sẵn trong code (có thể đã hết hạn)');
+  $('#aiKeyStatus').textContent = parts.join(' · ') + ' — nếu quét lỗi, dán khóa mới rồi bấm Lưu.';
+}
+function setupAIKeyUI(){
+  try{ $('#aiKeyOR').value = localStorage.getItem(CUSTOM_OR_KEY)||''; }catch(e){}
+  try{ $('#aiKeyGem').value = localStorage.getItem(CUSTOM_GEM_KEY)||''; }catch(e){}
+  refreshAIKeyStatus();
+  $('#btnAiKeyToggle').addEventListener('click', ()=>{
+    const body=$('#aiKeyBody'); body.classList.toggle('hidden');
+    const ic=$('#btnAiKeyToggle svg'); if(ic) ic.style.transform = body.classList.contains('hidden')?'':'rotate(180deg)';
+  });
+  $('#btnAiKeySave').addEventListener('click', ()=>{
+    const orVal=$('#aiKeyOR').value.trim(), gemVal=$('#aiKeyGem').value.trim();
+    try{
+      if(orVal) localStorage.setItem(CUSTOM_OR_KEY, orVal); else localStorage.removeItem(CUSTOM_OR_KEY);
+      if(gemVal) localStorage.setItem(CUSTOM_GEM_KEY, gemVal); else localStorage.removeItem(CUSTOM_GEM_KEY);
+    }catch(e){}
+    refreshAIKeyStatus();
+    toast('✅ Đã lưu khóa AI. Giờ thử quét ảnh lại nhé.','ok',3500);
+  });
+  $('#btnAiKeyClear').addEventListener('click', async ()=>{
+    const ok=await askConfirm({title:'Xóa khóa AI đã lưu?', message:'Khóa bạn tự dán sẽ bị xóa, quay lại dùng khóa có sẵn trong code.', okText:'Xóa', cancelText:'Giữ'});
+    if(!ok) return;
+    try{ localStorage.removeItem(CUSTOM_OR_KEY); localStorage.removeItem(CUSTOM_GEM_KEY); }catch(e){}
+    $('#aiKeyOR').value=''; $('#aiKeyGem').value='';
+    refreshAIKeyStatus();
+    toast('Đã xóa khóa tùy chỉnh','info',2500);
+  });
 }
 function bindEvents(){
   $('#tabBtnView').addEventListener('click', ()=>switchTab('view'));
@@ -1329,7 +1436,7 @@ function bindEvents(){
 
 /* ===== 15) KHỞI ĐỘNG ===== */
 async function boot(){
-  setupPWA(); buildStatic(); bindEvents();
+  setupPWA(); buildStatic(); bindEvents(); setupAIKeyUI();
   loadLib(); renderLib();
   const hadLocal = loadLocal();
   renderAll();
