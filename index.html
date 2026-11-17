@@ -478,7 +478,8 @@ const SYNC_INTERVAL = 25000;
 const state = {
   products: [],
   updatedAt: 0, pendingSync: false, editingId: null,
-  editSnapshot: null, saveLock: false, syncing: false, lastSyncedAt: null
+  editSnapshot: null, saveLock: false, syncing: false, lastSyncedAt: null,
+  libUpdatedAt: 0
 };
 
 /* ===== 3) TIỆN ÍCH ===== */
@@ -565,7 +566,7 @@ const icon = (name, cls='') => `<svg class="ic ${cls}" viewBox="0 0 24 24" fill=
 
 /* ===== 5) LƯU TRỮ CỤC BỘ ===== */
 function saveLocal(){
-  try{ localStorage.setItem(LOCAL_KEY, JSON.stringify({products:state.products, updatedAt:state.updatedAt})); }catch(e){}
+  try{ localStorage.setItem(LOCAL_KEY, JSON.stringify({products:state.products, updatedAt:state.updatedAt, libUpdatedAt:state.libUpdatedAt})); }catch(e){}
 }
 function loadLocal(){
   try{
@@ -573,7 +574,7 @@ function loadLocal(){
     if(!raw) return false;
     const data = JSON.parse(raw);
     if(!data || !Array.isArray(data.products)) return false;
-    state.products = data.products; state.updatedAt = data.updatedAt||0;
+    state.products = data.products; state.updatedAt = data.updatedAt||0; state.libUpdatedAt = data.libUpdatedAt||0;
     return true;
   }catch(e){ return false; }
 }
@@ -603,21 +604,27 @@ async function pullFromServer(manual){
     if(res.status===401) throw new Error('Sai khóa — kiểm tra lại Master Key');
     if(!res.ok) throw new Error('Lỗi kết nối '+res.status);
     const json = await res.json();
-    const rec = (json && json.record && Array.isArray(json.record.products))
-      ? json.record : { products: [], updatedAt: 0 };
+    const rec = (json && json.record && typeof json.record==='object')
+      ? json.record : { products: [], updatedAt: 0, lib: [], libUpdatedAt: 0 };
+    if(!Array.isArray(rec.products)) rec.products = [];
+    if(!Array.isArray(rec.lib)) rec.lib = [];
     state.lastSyncedAt = Date.now();
-    if((rec.updatedAt||0) > state.updatedAt){
-      state.products = rec.products||[];
-      state.updatedAt = rec.updatedAt||0;
+    const srvProdNewer = (rec.updatedAt||0) > state.updatedAt;
+    const srvLibNewer  = (rec.libUpdatedAt||0) > state.libUpdatedAt;
+    const locProdNewer = state.updatedAt > (rec.updatedAt||0);
+    const locLibNewer  = state.libUpdatedAt > (rec.libUpdatedAt||0);
+    if(srvProdNewer){ state.products = rec.products; state.updatedAt = rec.updatedAt||0; }
+    if(srvLibNewer){ lib = rec.lib; state.libUpdatedAt = rec.libUpdatedAt||0; saveLib(); renderLib(); }
+    if(srvProdNewer || srvLibNewer){
       saveLocal(); renderAll();
-      setSync('ok','Đã cập nhật dữ liệu mới từ máy chủ');
-      if(manual) toast('Đã tải dữ liệu mới nhất','ok');
-    } else if(state.updatedAt > (rec.updatedAt||0)){
+      setSync('ok','Đã cập nhật dữ liệu + ảnh mới từ máy chủ');
+      if(manual) toast('Đã tải dữ liệu mới nhất (kể cả ảnh)','ok');
+    } else if(locProdNewer || locLibNewer){
       state.pendingSync = true;
       setSync('local','Có thay đổi trên máy chưa lên máy chủ — sẽ tự đồng bộ');
       syncSoon();
     } else {
-      setSync('ok', state.pendingSync ? 'Đang chờ đẩy thay đổi lên máy chủ…' : 'Đã đồng bộ với máy chủ');
+      setSync('ok', state.pendingSync ? 'Đang chờ đẩy thay đổi lên máy chủ…' : 'Đã đồng bộ với máy chủ (giá + ảnh)');
       if(manual) toast('Dữ liệu đã là mới nhất','info');
     }
   } catch(err){
@@ -631,13 +638,34 @@ async function pushToServer(quiet){
   state.syncing = true;
   if(!quiet) setSync('loading','Đang lưu lên máy chủ…');
   try {
+    // Gộp dữ liệu mới nhất từ máy chủ trước (tránh máy này đè ảnh/giá của máy khác)
+    try{
+      const gres = await fetch(API_GET_URL, {method:'GET', cache:'no-store', headers:{ 'X-Master-Key': MASTER_KEY }});
+      if(gres.ok){
+        const gj = await gres.json();
+        const rc = gj && gj.record && typeof gj.record==='object' ? gj.record : null;
+        if(rc){
+          let merged=false;
+          if((rc.updatedAt||0) > state.updatedAt && Array.isArray(rc.products)){ state.products = rc.products; state.updatedAt = rc.updatedAt||0; merged=true; }
+          if((rc.libUpdatedAt||0) > state.libUpdatedAt && Array.isArray(rc.lib)){ lib = rc.lib; state.libUpdatedAt = rc.libUpdatedAt||0; saveLib(); renderLib(); merged=true; }
+          if(merged){ saveLocal(); renderAll(); }
+        }
+      }
+    }catch(e){}
+    let bodyObj = { products: state.products, updatedAt: state.updatedAt, lib: lib, libUpdatedAt: state.libUpdatedAt };
+    let bodyStr = JSON.stringify(bodyObj);
+    if(bodyStr.length > 8_000_000){ // gần giới hạn JSONBin → tạm bỏ ảnh, chỉ đẩy giá
+      bodyObj = { products: state.products, updatedAt: state.updatedAt };
+      bodyStr = JSON.stringify(bodyObj);
+      if(!quiet) toast('⚠️ Kho ảnh quá lớn — chỉ đồng bộ giá, hãy xóa bớt ảnh cũ trong kho.','warn',5000);
+    }
     const res = await fetch(API_PUT_URL, {
       method:'PUT',
       headers:{
         'X-Master-Key': MASTER_KEY,
         'Content-Type':'application/json'
       },
-      body: JSON.stringify({ products: state.products, updatedAt: state.updatedAt })
+      body: bodyStr
     });
     if(res.status===404) throw new Error('Bin không tồn tại');
     if(res.status===401) throw new Error('Sai khóa — không có quyền ghi');
@@ -1068,7 +1096,9 @@ function addToLib(name, hash, thumb){
   const exist=lib.find(it=>keyName(it.name)===k);
   if(exist){ exist.hash=hash; exist.thumb=thumb; exist.name=name; exist.updatedAt=Date.now(); }
   else lib.push({ id: Date.now().toString(36)+Math.random().toString(36).slice(2,6), name, hash, thumb, createdAt: Date.now() });
+  state.libUpdatedAt = Date.now();
   saveLib(); renderLib();
+  state.pendingSync = true; syncSoon();
 }
 function renderLib(){
   $('#libCount').textContent = lib.length;
@@ -1296,7 +1326,7 @@ async function runAIScan(b64){
 }
 
 function exportAll(){
-  const data={ v:1, exportedAt:Date.now(), products:state.products, updatedAt:state.updatedAt, lib:lib };
+  const data={ v:1, exportedAt:Date.now(), products:state.products, updatedAt:state.updatedAt, lib:lib, libUpdatedAt:state.libUpdatedAt };
   const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
   const url=URL.createObjectURL(blob);
   const a=document.createElement('a');
@@ -1312,7 +1342,7 @@ function importAll(file){
       const data=JSON.parse(reader.result);
       let changed=false;
       if(Array.isArray(data.products)){ state.products=data.products; state.updatedAt=data.updatedAt||Date.now(); changed=true; }
-      if(Array.isArray(data.lib)){ lib=data.lib; saveLib(); renderLib(); }
+      if(Array.isArray(data.lib)){ lib=data.lib; state.libUpdatedAt=data.libUpdatedAt||Date.now(); saveLib(); renderLib(); }
       if(changed){ saveLocal(); commitChange(); }
       else renderAll();
       toast('✅ Đã nhập dữ liệu thành công','ok');
@@ -1344,7 +1374,7 @@ function buildStatic(){
   $('#btnExport').innerHTML=icon('download')+'Xuất';
   $('#btnImport').innerHTML=icon('upload')+'Nhập';
   $('#btnLibToggle').innerHTML=icon('chevron');
-  $('#libHint').innerHTML=icon('info')+' Chụp + đặt tên hàng → lần sau quét nhận ra ngay (không cần AI, không tốn lượt). <b>Trước khi thay code mới, bấm Xuất để sao lưu; sau đó Nhập lại là không mất dữ liệu.</b>';
+  $('#libHint').innerHTML=icon('info')+' Chụp + đặt tên hàng → lần sau quét nhận ra ngay (không cần AI, không tốn lượt). <b>Ảnh trong kho được đồng bộ tới mọi máy qua JSONBin.</b> Trước khi thay code mới, bấm Xuất để sao lưu; sau đó Nhập lại là không mất dữ liệu.';
   $('#aiKeyIc').innerHTML=icon('zap');
   $('#btnAiKeyToggle').innerHTML=icon('chevron');
   refreshFormMode();
@@ -1430,7 +1460,7 @@ function bindEvents(){
     const id=del.dataset.libdel; const it=lib.find(x=>x.id===id); if(!it) return;
     const ok=await askConfirm({title:'Xóa khỏi kho ảnh?', message:`Xóa <b>"${esc(it.name)}"</b> khỏi kho nhận diện nhanh?`, okText:'Xóa', cancelText:'Giữ', danger:true});
     if(!ok) return;
-    lib=lib.filter(x=>x.id!==id); saveLib(); renderLib(); toast('Đã xóa "'+it.name+'" khỏi kho','ok');
+    lib=lib.filter(x=>x.id!==id); state.libUpdatedAt=Date.now(); saveLib(); renderLib(); state.pendingSync=true; syncSoon(); toast('Đã xóa "'+it.name+'" khỏi kho — đồng bộ tới mọi máy','ok');
   });
 }
 
@@ -1440,6 +1470,8 @@ async function boot(){
   loadLib(); renderLib();
   const hadLocal = loadLocal();
   renderAll();
+  // Một lần: máy này có sẵn ảnh nhưng chưa có mốc đồng bộ → tự đánh dấu đẩy lên máy chủ
+  if(lib.length>0 && !state.libUpdatedAt){ state.libUpdatedAt=Date.now(); state.pendingSync=true; saveLocal(); }
   const wait = ms => new Promise(r=>setTimeout(r,ms));
   await Promise.race([ pullFromServer(false), wait(6000) ]);
   if(!hadLocal && state.products.length===0 && $('#syncLine').classList.contains('st-offline')){
